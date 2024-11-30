@@ -33,8 +33,10 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BannerBlockEntity;
@@ -43,12 +45,10 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.DecoratedPotBlockEntity;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunkSection;
-import net.minecraft.world.level.chunk.status.ChunkStatus;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.cloudburstmc.math.vector.Vector3i;
 import org.geysermc.geyser.level.GeyserWorldManager;
 import org.geysermc.geyser.network.GameProtocol;
-import org.geysermc.geyser.platform.mod.GeyserModBootstrap;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.util.MinecraftKey;
 import org.geysermc.mcprotocollib.protocol.data.game.Holder;
@@ -85,16 +85,17 @@ public class GeyserModWorldManager extends GeyserWorldManager {
         }
 
         Level level = player.level();
-        if (y < level.getMinBuildHeight()) {
+        if (y < level.getMinY()) {
             return 0;
         }
 
-        ChunkAccess chunk = level.getChunkSource().getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false);
+        // Only loads active chunks, and doesn't delegate to main thread
+        ChunkAccess chunk = ((ServerChunkCache) level.getChunkSource()).chunkMap.getChunkToSend(ChunkPos.asLong(x >> 4, z >> 4));
         if (chunk == null) {
             return 0;
         }
 
-        int worldOffset = level.getMinBuildHeight() >> 4;
+        int worldOffset = level.getMinY() >> 4;
         int chunkOffset = (y >> 4) - worldOffset;
         if (chunkOffset < chunk.getSections().length) {
             LevelChunkSection section = chunk.getSections()[chunkOffset];
@@ -109,12 +110,6 @@ public class GeyserModWorldManager extends GeyserWorldManager {
     @Override
     public boolean hasOwnChunkCache() {
         return SharedConstants.getCurrentVersion().getProtocolVersion() == GameProtocol.getJavaProtocolVersion();
-    }
-
-    @Override
-    public boolean hasPermission(GeyserSession session, String permission) {
-        ServerPlayer player = getPlayer(session);
-        return GeyserModBootstrap.getInstance().hasPermission(player, permission);
     }
 
     @Override

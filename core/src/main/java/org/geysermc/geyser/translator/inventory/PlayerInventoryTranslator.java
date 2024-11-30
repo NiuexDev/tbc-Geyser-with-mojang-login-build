@@ -33,13 +33,22 @@ import org.cloudburstmc.protocol.bedrock.data.inventory.ContainerSlotType;
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData;
 import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.ItemStackRequest;
 import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.ItemStackRequestSlotData;
-import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.*;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.CraftCreativeAction;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.DestroyAction;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.DropAction;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.ItemStackRequestAction;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.SwapAction;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.action.TransferItemStackRequestAction;
 import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.response.ItemStackResponse;
 import org.cloudburstmc.protocol.bedrock.packet.ContainerClosePacket;
 import org.cloudburstmc.protocol.bedrock.packet.ContainerOpenPacket;
 import org.cloudburstmc.protocol.bedrock.packet.InventoryContentPacket;
 import org.cloudburstmc.protocol.bedrock.packet.InventorySlotPacket;
-import org.geysermc.geyser.inventory.*;
+import org.geysermc.geyser.inventory.BedrockContainerSlot;
+import org.geysermc.geyser.inventory.GeyserItemStack;
+import org.geysermc.geyser.inventory.Inventory;
+import org.geysermc.geyser.inventory.PlayerInventory;
+import org.geysermc.geyser.inventory.SlotType;
 import org.geysermc.geyser.item.Items;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.skin.FakeHeadProvider;
@@ -123,7 +132,7 @@ public class PlayerInventoryTranslator extends InventoryTranslator {
             if (session.getGameMode() == GameMode.CREATIVE) {
                 slotPacket.setItem(UNUSUABLE_CRAFTING_SPACE_BLOCK.apply(session.getUpstream().getProtocolVersion()));
             } else {
-                slotPacket.setItem(ItemTranslator.translateToBedrock(session, inventory.getItem(i).getItemStack()));
+                slotPacket.setItem(inventory.getItem(i).getItemData(session));
             }
 
             session.sendUpstreamPacket(slotPacket);

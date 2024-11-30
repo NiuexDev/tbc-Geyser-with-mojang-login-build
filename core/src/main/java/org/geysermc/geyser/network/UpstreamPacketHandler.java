@@ -26,10 +26,10 @@
 package org.geysermc.geyser.network;
 
 import io.netty.buffer.Unpooled;
+import org.cloudburstmc.math.vector.Vector2f;
 import org.cloudburstmc.protocol.bedrock.BedrockDisconnectReasons;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
 import org.cloudburstmc.protocol.bedrock.codec.compat.BedrockCompat;
-import org.cloudburstmc.protocol.bedrock.codec.v622.Bedrock_v622;
 import org.cloudburstmc.protocol.bedrock.data.ExperimentData;
 import org.cloudburstmc.protocol.bedrock.data.PacketCompressionAlgorithm;
 import org.cloudburstmc.protocol.bedrock.data.ResourcePackType;
@@ -39,9 +39,9 @@ import org.cloudburstmc.protocol.bedrock.netty.codec.compression.ZlibCompression
 import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket;
 import org.cloudburstmc.protocol.bedrock.packet.LoginPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ModalFormResponsePacket;
-import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket;
 import org.cloudburstmc.protocol.bedrock.packet.NetworkSettingsPacket;
 import org.cloudburstmc.protocol.bedrock.packet.PlayStatusPacket;
+import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket;
 import org.cloudburstmc.protocol.bedrock.packet.RequestNetworkSettingsPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ResourcePackChunkDataPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ResourcePackChunkRequestPacket;
@@ -121,10 +121,11 @@ public class UpstreamPacketHandler extends LoggingPacketHandler {
                 session.disconnect(disconnectMessage);
                 return false;
             } else if (protocolVersion < GameProtocol.DEFAULT_BEDROCK_CODEC.getProtocolVersion()) {
-                if (protocolVersion < Bedrock_v622.CODEC.getProtocolVersion()) {
-                    // https://github.com/GeyserMC/Geyser/issues/4378
-                    session.getUpstream().getSession().setCodec(BedrockCompat.CODEC_LEGACY);
-                }
+                // A note on the following line: various older client versions have different forms of DisconnectPacket.
+                // Using only the latest BedrockCompat for such clients leads to inaccurate disconnect messages: https://github.com/GeyserMC/Geyser/issues/4378
+                // This updates the BedrockCompat protocol if necessary:
+                session.getUpstream().getSession().setCodec(BedrockCompat.disconnectCompat(protocolVersion));
+
                 session.disconnect(GeyserLocale.getLocaleStringLog("geyser.network.outdated.client", supportedVersions));
                 return false;
             } else {
@@ -210,7 +211,7 @@ public class UpstreamPacketHandler extends LoggingPacketHandler {
             ResourcePackManifest.Header header = pack.manifest().header();
             resourcePacksInfo.getResourcePackInfos().add(new ResourcePacksInfoPacket.Entry(
                     header.uuid().toString(), header.version().toString(), codec.size(), pack.contentKey(),
-                    "", header.uuid().toString(), false, false));
+                    "", header.uuid().toString(), false, false, false, ""));
         }
         resourcePacksInfo.setForcedToAccept(GeyserImpl.getInstance().getConfig().isForceResourcePacks());
         session.sendUpstreamPacket(resourcePacksInfo);
@@ -275,10 +276,10 @@ public class UpstreamPacketHandler extends LoggingPacketHandler {
 
     private boolean couldLoginUserByName(String bedrockUsername) {
         if (geyser.getConfig().getSavedUserLogins().contains(bedrockUsername)) {
-            String refreshToken = geyser.refreshTokenFor(bedrockUsername);
-            if (refreshToken != null) {
+            String authChain = geyser.authChainFor(bedrockUsername);
+            if (authChain != null) {
                 geyser.getLogger().info(GeyserLocale.getLocaleStringLog("geyser.auth.stored_credentials", session.getAuthData().name()));
-                session.authenticateWithRefreshToken(refreshToken);
+                session.authenticateWithAuthChain(authChain);
                 return true;
             }
         }
@@ -300,8 +301,9 @@ public class UpstreamPacketHandler extends LoggingPacketHandler {
     }
 
     @Override
-    public PacketSignal handle(MovePlayerPacket packet) {
-        if (session.isLoggingIn()) {
+    public PacketSignal handle(PlayerAuthInputPacket packet) {
+        // This doesn't catch rotation, but for a niche case I don't exactly want to cache rotation...
+        if (session.isLoggingIn() && !packet.getMotion().equals(Vector2f.ZERO)) {
             SetTitlePacket titlePacket = new SetTitlePacket();
             titlePacket.setType(SetTitlePacket.Type.ACTIONBAR);
             titlePacket.setText(GeyserLocale.getPlayerLocaleString("geyser.auth.login.wait", session.locale()));

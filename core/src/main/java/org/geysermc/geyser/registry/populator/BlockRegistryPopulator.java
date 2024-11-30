@@ -34,10 +34,21 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
-import it.unimi.dsi.fastutil.objects.*;
-import org.cloudburstmc.nbt.*;
+import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectMaps;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.objects.ObjectIntPair;
+import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
+import org.cloudburstmc.nbt.NBTInputStream;
+import org.cloudburstmc.nbt.NbtMap;
+import org.cloudburstmc.nbt.NbtMapBuilder;
+import org.cloudburstmc.nbt.NbtType;
+import org.cloudburstmc.nbt.NbtUtils;
 import org.cloudburstmc.protocol.bedrock.codec.v671.Bedrock_v671;
 import org.cloudburstmc.protocol.bedrock.codec.v685.Bedrock_v685;
+import org.cloudburstmc.protocol.bedrock.codec.v712.Bedrock_v712;
+import org.cloudburstmc.protocol.bedrock.codec.v729.Bedrock_v729;
+import org.cloudburstmc.protocol.bedrock.codec.v748.Bedrock_v748;
 import org.cloudburstmc.protocol.bedrock.data.BlockPropertyData;
 import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition;
 import org.geysermc.geyser.GeyserImpl;
@@ -50,6 +61,7 @@ import org.geysermc.geyser.level.block.property.Properties;
 import org.geysermc.geyser.level.block.type.Block;
 import org.geysermc.geyser.level.block.type.BlockState;
 import org.geysermc.geyser.level.block.type.FlowerPotBlock;
+import org.geysermc.geyser.level.block.type.SkullBlock;
 import org.geysermc.geyser.level.physics.PistonBehavior;
 import org.geysermc.geyser.registry.BlockRegistries;
 import org.geysermc.geyser.registry.Registries;
@@ -61,7 +73,15 @@ import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import java.io.DataInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.BitSet;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 
@@ -108,7 +128,19 @@ public final class BlockRegistryPopulator {
     private static void registerBedrockBlocks() {
         var blockMappers = ImmutableMap.<ObjectIntPair<String>, Remapper>builder()
                 .put(ObjectIntPair.of("1_20_80", Bedrock_v671.CODEC.getProtocolVersion()), Conversion685_671::remapBlock)
-                .put(ObjectIntPair.of("1_21_0", Bedrock_v685.CODEC.getProtocolVersion()), tag -> tag)
+                .put(ObjectIntPair.of("1_21_0", Bedrock_v685.CODEC.getProtocolVersion()), Conversion712_685::remapBlock)
+                .put(ObjectIntPair.of("1_21_20", Bedrock_v712.CODEC.getProtocolVersion()), Conversion729_712::remapBlock)
+                .put(ObjectIntPair.of("1_21_30", Bedrock_v729.CODEC.getProtocolVersion()), tag -> tag)
+                .put(ObjectIntPair.of("1_21_40", Bedrock_v748.CODEC.getProtocolVersion()), tag -> {
+                    final String name = tag.getString("name");
+                    if (name.endsWith("_wood") && tag.getCompound("states").containsKey("stripped_bit")) {
+                        NbtMapBuilder builder = tag.getCompound("states").toBuilder();
+                        builder.remove("stripped_bit");
+                        NbtMap states = builder.build();
+                        return tag.toBuilder().putCompound("states", states).build();
+                    }
+                    return tag;
+                })
                 .build();
 
         // We can keep this strong as nothing should be garbage collected
@@ -129,7 +161,7 @@ public final class BlockRegistryPopulator {
                     NbtMapBuilder builder = vanillaBlockStates.get(i).toBuilder();
                     builder.remove("version"); // Remove all nbt tags which are not needed for differentiating states
                     builder.remove("name_hash"); // Quick workaround - was added in 1.19.20
-                    builder.remove("network_id"); // Added in 1.19.80 - ????
+                    builder.remove("network_id"); // Added in 1.19.80
                     builder.remove("block_id"); // Added in 1.20.60
                     //noinspection UnstableApiUsage
                     builder.putCompound("states", statesInterner.intern((NbtMap) builder.remove("states")));
@@ -164,11 +196,10 @@ public final class BlockRegistryPopulator {
             GeyserBedrockBlock[] bedrockRuntimeMap = new GeyserBedrockBlock[blockStates.size()];
             for (int i = 0; i < blockStates.size(); i++) {
                 NbtMap tag = blockStates.get(i);
-                if (blockStateOrderedMap.containsKey(tag)) {
+                GeyserBedrockBlock block = new GeyserBedrockBlock(i, tag);
+                if (blockStateOrderedMap.put(tag, block) != null) {
                     throw new AssertionError("Duplicate block states in Bedrock palette: " + tag);
                 }
-                GeyserBedrockBlock block = new GeyserBedrockBlock(i, tag);
-                blockStateOrderedMap.put(tag, block);
                 bedrockRuntimeMap[i] = block;
             }
 
@@ -241,6 +272,15 @@ public final class BlockRegistryPopulator {
 
                 NbtMap originalBedrockTag = buildBedrockState(blockState, entry);
                 NbtMap bedrockTag = stateMapper.remap(originalBedrockTag);
+
+                // FIXME TEMPORARY
+                if (blockState.block() instanceof SkullBlock && palette.valueInt() >= Bedrock_v748.CODEC.getProtocolVersion()) {
+                    // The flattening must be a very interesting process.
+                    String skullName = blockState.block().javaIdentifier().asString().replace("_wall", "");
+                    bedrockTag = bedrockTag.toBuilder()
+                        .putString("name", skullName)
+                        .build();
+                }
 
                 GeyserBedrockBlock vanillaBedrockDefinition = blockStateOrderedMap.get(bedrockTag);
 

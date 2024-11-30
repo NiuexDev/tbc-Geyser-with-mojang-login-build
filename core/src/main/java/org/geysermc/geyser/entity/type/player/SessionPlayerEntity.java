@@ -29,6 +29,7 @@ import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import lombok.Getter;
 import lombok.Setter;
 import org.checkerframework.checker.nullness.qual.Nullable;
+import org.cloudburstmc.math.vector.Vector2f;
 import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.data.AttributeData;
 import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataTypes;
@@ -37,11 +38,12 @@ import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket;
 import org.cloudburstmc.protocol.bedrock.packet.UpdateAttributesPacket;
 import org.geysermc.geyser.entity.attribute.GeyserAttributeType;
 import org.geysermc.geyser.item.Items;
-import org.geysermc.geyser.network.GameProtocol;
 import org.geysermc.geyser.level.BedrockDimension;
+import org.geysermc.geyser.network.GameProtocol;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.util.AttributeUtils;
 import org.geysermc.geyser.util.DimensionUtils;
+import org.geysermc.geyser.util.MathUtils;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.attribute.Attribute;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.attribute.AttributeType;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.GlobalPos;
@@ -65,10 +67,25 @@ public class SessionPlayerEntity extends PlayerEntity {
     @Getter
     protected final Map<GeyserAttributeType, AttributeData> attributes = new Object2ObjectOpenHashMap<>();
     /**
+     * Java-only attribute
+     */
+    @Getter
+    private double blockInteractionRange = GeyserAttributeType.BLOCK_INTERACTION_RANGE.getDefaultValue();
+    /**
      * Used in PlayerInputTranslator for movement checks.
      */
     @Getter
     private boolean isRidingInFront;
+    /**
+     * Used when emulating client-side vehicles
+     */
+    @Getter
+    private Vector2f vehicleInput = Vector2f.ZERO;
+    /**
+     * Used when emulating client-side vehicles
+     */
+    @Getter
+    private int vehicleJumpStrength;
 
     private int lastAirSupply = getMaxAir();
 
@@ -123,12 +140,35 @@ public class SessionPlayerEntity extends PlayerEntity {
         if (valid) { // Don't update during session init
             session.getCollisionManager().updatePlayerBoundingBox(position);
         }
-        super.setPosition(position);
+        this.position = position.add(0, definition.offset(), 0);
+    }
+
+    /**
+     * Special method used only when updating the session player's rotation.
+     * For some reason, Mode#NORMAL ignored rotation. Yay.
+     * @param yaw the new yaw
+     * @param pitch the new pitch
+     * @param headYaw the head yaw
+     */
+    public void updateOwnRotation(float yaw, float pitch, float headYaw) {
+        setYaw(yaw);
+        setPitch(pitch);
+        setHeadYaw(headYaw);
+        
+        MovePlayerPacket movePlayerPacket = new MovePlayerPacket();
+        movePlayerPacket.setRuntimeEntityId(geyserId);
+        movePlayerPacket.setPosition(position);
+        movePlayerPacket.setRotation(getBedrockRotation());
+        movePlayerPacket.setOnGround(isOnGround());
+        movePlayerPacket.setMode(MovePlayerPacket.Mode.TELEPORT);
+        movePlayerPacket.setTeleportationCause(MovePlayerPacket.TeleportationCause.BEHAVIOR);
+
+        session.sendUpstreamPacket(movePlayerPacket);
     }
 
     /**
      * Set the player's position without applying an offset or moving the bounding box
-     * This is used in BedrockMovePlayerTranslator which receives the player's position
+     * This is used in BedrockMovePlayer which receives the player's position
      * with the offset pre-applied
      *
      * @param position the new position of the Bedrock player
@@ -230,8 +270,10 @@ public class SessionPlayerEntity extends PlayerEntity {
 
     @Override
     protected void updateAttribute(Attribute javaAttribute, List<AttributeData> newAttributes) {
-        if (javaAttribute.getType() == AttributeType.Builtin.GENERIC_ATTACK_SPEED) {
+        if (javaAttribute.getType() == AttributeType.Builtin.ATTACK_SPEED) {
             session.setAttackSpeed(AttributeUtils.calculateValue(javaAttribute));
+        } else if (javaAttribute.getType() == AttributeType.Builtin.BLOCK_INTERACTION_RANGE) {
+            this.blockInteractionRange = AttributeUtils.calculateValue(javaAttribute);
         } else {
             super.updateAttribute(javaAttribute, newAttributes);
         }
@@ -295,6 +337,7 @@ public class SessionPlayerEntity extends PlayerEntity {
     public void resetAttributes() {
         attributes.clear();
         maxHealth = GeyserAttributeType.MAX_HEALTH.getDefaultValue();
+        blockInteractionRange = GeyserAttributeType.BLOCK_INTERACTION_RANGE.getDefaultValue();
 
         UpdateAttributesPacket attributesPacket = new UpdateAttributesPacket();
         attributesPacket.setRuntimeEntityId(geyserId);
@@ -307,13 +350,24 @@ public class SessionPlayerEntity extends PlayerEntity {
         this.setAirSupply(getMaxAir());
     }
 
+    public void setVehicleInput(Vector2f vehicleInput) {
+        this.vehicleInput = Vector2f.from(
+                MathUtils.clamp(vehicleInput.getX(), -1.0f, 1.0f),
+                MathUtils.clamp(vehicleInput.getY(), -1.0f, 1.0f)
+        );
+    }
+
+    public void setVehicleJumpStrength(int vehicleJumpStrength) {
+        this.vehicleJumpStrength = MathUtils.constrain(vehicleJumpStrength, 0, 100);
+    }
+
     private boolean isBelowVoidFloor() {
         return position.getY() < voidFloorPosition();
     }
 
     public int voidFloorPosition() {
         // The void floor is offset about 40 blocks below the bottom of the world
-        BedrockDimension bedrockDimension = session.getChunkCache().getBedrockDimension();
+        BedrockDimension bedrockDimension = session.getBedrockDimension();
         return bedrockDimension.minY() - 40;
     }
 
